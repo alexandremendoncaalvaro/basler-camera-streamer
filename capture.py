@@ -1,5 +1,4 @@
 import os
-
 from flask import Flask, Response
 from pypylon import pylon
 import cv2
@@ -11,22 +10,41 @@ CAMERA_TIMEOUT_MS = int(os.getenv("CAMERA_TIMEOUT_MS", 1000))
 
 class CameraStreamer:
     def __init__(self):
-        self.camera = pylon.InstantCamera(
+        camera = pylon.InstantCamera(
             pylon.TlFactory.GetInstance().CreateFirstDevice()
         )
-        self.camera.Open()
+        camera.Open()
+        camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+        self.camera = camera
 
     def generate_frames(self):
-        while self.camera.IsGrabbing():
-            result = self.camera.GrabOne(CAMERA_TIMEOUT_MS)
+        while True:
+            result = self.camera.RetrieveResult(
+                CAMERA_TIMEOUT_MS,
+                pylon.TimeoutHandling_ThrowException
+            )
             if not result.GrabSucceeded():
-                return
-            buffer = cv2.imencode(".jpg", result.Array)[1]
-            yield (
-                f"--{BOUNDARY}\r\n"
-                "Content-Type: image/jpeg\r\n\r\n"
-            ).encode() + buffer.tobytes() + b"\r\n"
+                result.Release()
+                continue
+            img = result.Array
+            result.Release()
 
+            success, buffer = cv2.imencode(".jpg", img)
+            if not success:
+                continue
+
+            yield (
+                b"--" + BOUNDARY.encode() + b"\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + buffer.tobytes() +
+                b"\r\n"
+            )
+
+    def __del__(self):
+        if self.camera.IsGrabbing():
+            self.camera.StopGrabbing()
+        if self.camera.IsOpen():
+            self.camera.Close()
 
 app = Flask(__name__)
 streamer = CameraStreamer()
@@ -42,7 +60,5 @@ def video_feed():
 def home():
     return "Bem vindo!"
 
-
 if __name__ == "__main__":
     app.run(host=HOST, port=PORT)
-
