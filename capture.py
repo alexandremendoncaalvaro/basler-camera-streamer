@@ -10,33 +10,37 @@ CAMERA_TIMEOUT_MS = int(os.getenv("CAMERA_TIMEOUT_MS", 1000))
 
 class CameraStreamer:
     def __init__(self):
-        camera = pylon.InstantCamera(
+        cam = pylon.InstantCamera(
             pylon.TlFactory.GetInstance().CreateFirstDevice()
         )
-        camera.Open()
-        camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-        self.camera = camera
+        cam.Open()
+        cam.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+        conv = pylon.ImageFormatConverter()
+        conv.OutputPixelFormat = pylon.PixelType_BGR8packed
+        conv.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+        self.camera = cam
+        self.converter = conv
 
     def generate_frames(self):
         while True:
-            result = self.camera.RetrieveResult(
+            res = self.camera.RetrieveResult(
                 CAMERA_TIMEOUT_MS,
                 pylon.TimeoutHandling_ThrowException
             )
-            if not result.GrabSucceeded():
-                result.Release()
+            if not res.GrabSucceeded():
+                res.Release()
                 continue
-            img = result.Array
-            result.Release()
+            img = self.converter.Convert(res).Array
+            res.Release()
 
-            success, buffer = cv2.imencode(".jpg", img)
-            if not success:
+            ok, buf = cv2.imencode(".jpg", img)
+            if not ok:
                 continue
 
             yield (
                 b"--" + BOUNDARY.encode() + b"\r\n"
                 b"Content-Type: image/jpeg\r\n\r\n"
-                + buffer.tobytes() +
+                + buf.tobytes() +
                 b"\r\n"
             )
 
