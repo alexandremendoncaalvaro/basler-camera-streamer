@@ -15,6 +15,23 @@ TIMEOUT_MS = int(os.getenv("CAMERA_TIMEOUT_MS", 1000))
 FRAME_RATE = float(os.getenv("ACQUISITION_FRAME_RATE", "30.0"))
 MAX_CONNECTIONS = int(os.getenv("MAX_CONNECTIONS", 3))
 
+# Camera parameters
+ACQUISITION_MODE = os.getenv("ACQUISITION_MODE", "Continuous")
+GRAB_STRATEGY = os.getenv("GRAB_STRATEGY", "LatestImageOnly")
+ACQUISITION_FRAME_RATE_ENABLE = (
+    os.getenv("ACQUISITION_FRAME_RATE_ENABLE", "True").lower() == "true"
+)
+
+# Exposure and Gain
+EXPOSURE_AUTO = os.getenv("EXPOSURE_AUTO", "Continuous")
+EXPOSURE_TIME = float(os.getenv("EXPOSURE_TIME", "5000"))  # microseconds
+GAIN_AUTO = os.getenv("GAIN_AUTO", "Continuous")
+GAIN = float(os.getenv("GAIN", "0"))  # dB
+
+# Image adjustments
+IMAGE_CONTRAST = float(os.getenv("IMAGE_CONTRAST", "1.0"))
+IMAGE_BRIGHTNESS = int(os.getenv("IMAGE_BRIGHTNESS", "0"))
+
 
 class FrameBuffer:
     def __init__(self):
@@ -76,11 +93,23 @@ class CameraController:
         return camera
 
     def _configure_camera(self, camera):
-        camera.AcquisitionMode.SetValue("Continuous")
-        camera.ExposureAuto.SetValue("Continuous")
-        camera.GainAuto.SetValue("Continuous")
-        camera.AcquisitionFrameRateEnable.SetValue(True)
-        camera.AcquisitionFrameRate.SetValue(FRAME_RATE)
+        # Acquisition mode
+        camera.AcquisitionMode.SetValue(ACQUISITION_MODE)
+
+        # Frame rate
+        camera.AcquisitionFrameRateEnable.SetValue(ACQUISITION_FRAME_RATE_ENABLE)
+        if ACQUISITION_FRAME_RATE_ENABLE:
+            camera.AcquisitionFrameRate.SetValue(FRAME_RATE)
+
+        # Exposure settings
+        camera.ExposureAuto.SetValue(EXPOSURE_AUTO)
+        if EXPOSURE_AUTO == "Off":
+            camera.ExposureTime.SetValue(EXPOSURE_TIME)
+
+        # Gain settings
+        camera.GainAuto.SetValue(GAIN_AUTO)
+        if GAIN_AUTO == "Off":
+            camera.Gain.SetValue(GAIN)
 
     def _create_converter(self):
         converter = pylon.ImageFormatConverter()
@@ -89,7 +118,8 @@ class CameraController:
         return converter
 
     def start_grabbing(self):
-        self._camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+        grab_strategy = getattr(pylon, f"GrabStrategy_{GRAB_STRATEGY}")
+        self._camera.StartGrabbing(grab_strategy)
 
     def is_grabbing(self):
         return self._camera.IsGrabbing()
@@ -115,6 +145,10 @@ class CameraController:
         return self._encode_frame(img)
 
     def _encode_frame(self, img):
+        # Apply image adjustments if needed
+        if IMAGE_CONTRAST != 1.0 or IMAGE_BRIGHTNESS != 0:
+            img = self._apply_image_adjustments(img)
+
         ok, buf = cv2.imencode(".jpg", img)
         if not ok:
             return None
@@ -123,6 +157,11 @@ class CameraController:
             b"--" + BOUNDARY.encode() + b"\r\n" + b"Content-Type: image/jpeg\r\n\r\n"
         )
         return header + buf.tobytes() + b"\r\n"
+
+    def _apply_image_adjustments(self, img):
+        # Apply contrast and brightness: new_img = contrast * img + brightness
+        adjusted = cv2.convertScaleAbs(img, alpha=IMAGE_CONTRAST, beta=IMAGE_BRIGHTNESS)
+        return adjusted
 
     def close(self):
         self._running = False
