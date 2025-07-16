@@ -82,8 +82,8 @@ Define o modo de aquisição: `SingleFrame` para um único frame ou `Continuous`
 
 Determina como os frames são entregues ao usuário:
 
-* `OneByOne`: cada imagem é processada em ordem
-* `LatestImageOnly`: descarta frames antigos, sempre retorna o mais recente ([GitHub][2])
+- `OneByOne`: cada imagem é processada em ordem
+- `LatestImageOnly`: descarta frames antigos, sempre retorna o mais recente ([GitHub][2])
 
 **Configuração**: `GRAB_STRATEGY` (padrão: `LatestImageOnly`)
 
@@ -92,24 +92,27 @@ Determina como os frames são entregues ao usuário:
 Controla a taxa de frames por segundo da câmera ([Basler Docs][3]).
 
 **Configuração**:
+
 - `ACQUISITION_FRAME_RATE_ENABLE` (padrão: `True`)
 - `ACQUISITION_FRAME_RATE` (padrão: `30.0`)
 
 ### ExposureAuto & ExposureTime
 
-* `ExposureAuto=Continuous`: ajusta automaticamente o tempo de exposição ([Basler Docs][4])
-* `ExposureAuto=Off`: permite controle manual do tempo de exposição
+- `ExposureAuto=Continuous`: ajusta automaticamente o tempo de exposição ([Basler Docs][4])
+- `ExposureAuto=Off`: permite controle manual do tempo de exposição
 
 **Configuração**:
+
 - `EXPOSURE_AUTO` (padrão: `Continuous`)
 - `EXPOSURE_TIME` (padrão: `5000` µs, usado apenas se `EXPOSURE_AUTO=Off`)
 
 ### GainAuto & Gain
 
-* `GainAuto=Continuous`: ajusta automaticamente o ganho do sensor ([Basler Docs][6])
-* `GainAuto=Off`: permite controle manual do ganho em dB
+- `GainAuto=Continuous`: ajusta automaticamente o ganho do sensor ([Basler Docs][6])
+- `GainAuto=Off`: permite controle manual do ganho em dB
 
 **Configuração**:
+
 - `GAIN_AUTO` (padrão: `Continuous`)
 - `GAIN` (padrão: `0` dB, usado apenas se `GAIN_AUTO=Off`)
 
@@ -117,10 +120,11 @@ Controla a taxa de frames por segundo da câmera ([Basler Docs][3]).
 
 Controles de pós-processamento aplicados ao frame antes da codificação:
 
-* `IMAGE_CONTRAST`: Controla o contraste (1.0 = original, >1.0 aumenta, <1.0 diminui)
-* `IMAGE_BRIGHTNESS`: Controla o brilho (0 = original, positivo clareia, negativo escurece)
+- `IMAGE_CONTRAST`: Controla o contraste (1.0 = original, >1.0 aumenta, <1.0 diminui)
+- `IMAGE_BRIGHTNESS`: Controla o brilho (0 = original, positivo clareia, negativo escurece)
 
 **Configuração**:
+
 - `IMAGE_CONTRAST` (padrão: `1.0`)
 - `IMAGE_BRIGHTNESS` (padrão: `0`)
 
@@ -164,6 +168,7 @@ python camera/test_camera_simple.py
 ```
 
 Este script verifica:
+
 - Descoberta de dispositivos Basler conectados
 - Abertura e configuração básica da câmera
 - Captura de frames usando diferentes métodos
