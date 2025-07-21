@@ -1,8 +1,85 @@
 # Basler Camera Streamer
 
-## Visão Geral
+## 🎯 Visão Geral
 
-Esta aplicação Flask faz streaming de vídeo de uma câmera Basler usando pypylon e OpenCV, expondo um feed MJPEG multipart em `/video_feed`.
+Stream de vídeo em tempo real usando câmera Basler ou arquivo de vídeo em loop.
+Aplicação Flask moderna com interface web para upload e controle.
+
+## 🚀 Como usar
+
+### 1. Configuração do ambiente
+
+```bash
+# Ative o ambiente virtual
+source .venv/bin/activate
+
+# As dependências já estão instaladas
+```
+
+### 2. Para testar sem câmera Basler
+
+**Opção A: Servidor de teste (mais simples)**
+
+```bash
+.venv/bin/python test_server.py
+```
+
+- Acesse http://localhost:8080
+- Faça upload de um vídeo
+- Interface simplificada para teste
+
+**Opção B: Aplicação principal**
+
+```bash
+.venv/bin/python capture.py
+```
+
+- Acesse http://localhost:8080
+- Faça upload de um vídeo através da interface
+- O stream será reiniciado automaticamente
+
+### 3. Para usar com câmera Basler
+
+```bash
+.venv/bin/python capture.py
+```
+
+A aplicação detectará automaticamente a câmera e iniciará o stream.
+
+## 📱 Endpoints
+
+- `/` - Interface principal com status e upload
+- `/video_feed` - Stream de vídeo (MJPEG)
+- `/preview` - Preview do stream em uma página
+- `/upload` - Upload de arquivo de vídeo
+
+## 🎯 Funcionalidades
+
+### ✅ Implementado
+
+- **Arquitetura modular**: Separação clara entre fontes de vídeo
+- **Upload de vídeo**: Interface web para enviar arquivos
+- **Stream em loop**: Vídeos tocam continuamente
+- **Fallback automático**: Tenta câmera → vídeo uploadado → nenhuma fonte
+- **Controle de conexões**: Limita conexões simultâneas
+- **FPS otimizado**: Controle de taxa de quadros para performance
+- **Interface moderna**: UI responsiva e intuitiva
+
+## 🔧 Estrutura do código
+
+```
+├── capture.py          # Aplicação principal (Flask + streaming)
+├── video_source.py     # Classes abstratas para fontes de vídeo
+├── test_server.py      # Servidor simplificado para testes
+└── uploads/           # Diretório para vídeos uploadados
+```
+
+## 🎮 Como testar
+
+1. **Primeiro teste**: Execute `test_server.py` para verificar upload
+2. **Upload de vídeo**: Use a interface web para enviar um arquivo
+3. **Stream principal**: Execute `capture.py` para stream real
+4. **Acesse preview**: Vá em `/preview` para ver o stream
 
 ## Pré‑requisitos
 

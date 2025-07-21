@@ -4,9 +4,19 @@ import threading
 import time
 from datetime import datetime
 
-from flask import Flask, Response, abort
-from pypylon import pylon
+from flask import (
+    Flask,
+    Response,
+    abort,
+    render_template_string,
+    request,
+    redirect,
+    url_for,
+    flash,
+)
+from werkzeug.utils import secure_filename
 import cv2
+from video_source import VideoSourceFactory
 
 BOUNDARY = os.getenv("FRAME_BOUNDARY", "frame")
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -14,6 +24,10 @@ PORT = int(os.getenv("PORT", 8080))
 TIMEOUT_MS = int(os.getenv("CAMERA_TIMEOUT_MS", 1000))
 FRAME_RATE = float(os.getenv("ACQUISITION_FRAME_RATE", "30.0"))
 MAX_CONNECTIONS = int(os.getenv("MAX_CONNECTIONS", 3))
+UPLOAD_FOLDER = os.getenv(
+    "UPLOAD_FOLDER", "/Users/alexandrealvaro/dev/estudio/basler-camera-streamer/uploads"
+)
+ALLOWED_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "webm"}
 
 # Camera parameters
 ACQUISITION_MODE = os.getenv("ACQUISITION_MODE", "Continuous")
@@ -78,69 +92,25 @@ class ConnectionManager:
             return self._count
 
 
-class CameraController:
+class VideoController:
     def __init__(self):
-        self._camera = self._create_camera()
-        self._converter = self._create_converter()
+        self._source = VideoSourceFactory.create_source()
         self._running = True
 
-    def _create_camera(self):
-        tl_factory = pylon.TlFactory.GetInstance()
-        device = tl_factory.CreateFirstDevice()
-        camera = pylon.InstantCamera(device)
-        camera.Open()
-        self._configure_camera(camera)
-        return camera
+    def start_capture(self):
+        if self._source:
+            self._source.start_capture()
 
-    def _configure_camera(self, camera):
-        # Acquisition mode
-        camera.AcquisitionMode.SetValue(ACQUISITION_MODE)
-
-        # Frame rate
-        camera.AcquisitionFrameRateEnable.SetValue(ACQUISITION_FRAME_RATE_ENABLE)
-        if ACQUISITION_FRAME_RATE_ENABLE:
-            camera.AcquisitionFrameRate.SetValue(FRAME_RATE)
-
-        # Exposure settings
-        camera.ExposureAuto.SetValue(EXPOSURE_AUTO)
-        if EXPOSURE_AUTO == "Off":
-            camera.ExposureTime.SetValue(EXPOSURE_TIME)
-
-        # Gain settings
-        camera.GainAuto.SetValue(GAIN_AUTO)
-        if GAIN_AUTO == "Off":
-            camera.Gain.SetValue(GAIN)
-
-    def _create_converter(self):
-        converter = pylon.ImageFormatConverter()
-        converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-        converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
-        return converter
-
-    def start_grabbing(self):
-        grab_strategy = getattr(pylon, f"GrabStrategy_{GRAB_STRATEGY}")
-        self._camera.StartGrabbing(grab_strategy)
-
-    def is_grabbing(self):
-        return self._camera.IsGrabbing()
-
-    def is_open(self):
-        return self._camera.IsOpen()
+    def is_available(self):
+        return self._source and self._source.is_available()
 
     def capture_frame(self):
-        if not self.is_grabbing():
+        if not self.is_available():
             return None
 
-        result = self._camera.RetrieveResult(
-            TIMEOUT_MS, pylon.TimeoutHandling_ThrowException
-        )
-
-        if not result.GrabSucceeded():
-            result.Release()
+        img = self._source.capture_frame()
+        if img is None:
             return None
-
-        img = self._converter.Convert(result).Array
-        result.Release()
 
         return self._encode_frame(img)
 
@@ -165,10 +135,13 @@ class CameraController:
 
     def close(self):
         self._running = False
-        if self.is_grabbing():
-            self._camera.StopGrabbing()
-        if self.is_open():
-            self._camera.Close()
+        if self._source:
+            self._source.close()
+
+    def get_source_type(self):
+        if not self._source:
+            return "None"
+        return type(self._source).__name__
 
 
 class StatusTracker:
@@ -205,9 +178,9 @@ class StatusTracker:
         return datetime.now() - self._start_time
 
 
-class CameraStreamer:
+class VideoStreamer:
     def __init__(self):
-        self._camera = CameraController()
+        self._video_controller = VideoController()
         self._buffer = FrameBuffer()
         self._connections = ConnectionManager(MAX_CONNECTIONS)
         self._status = StatusTracker()
@@ -217,12 +190,12 @@ class CameraStreamer:
     def _start_capture_thread(self):
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
-        self._camera.start_grabbing()
+        self._video_controller.start_capture()
 
     def _capture_loop(self):
-        while self._camera.is_grabbing():
+        while self._video_controller.is_available():
             try:
-                frame = self._camera.capture_frame()
+                frame = self._video_controller.capture_frame()
                 if frame:
                     self._buffer.put(frame)
                     self._status.record_frame()
@@ -238,7 +211,7 @@ class CameraStreamer:
             return
 
         try:
-            while self._camera.is_grabbing():
+            while self._video_controller.is_available():
                 frame = self._buffer.get()
                 if frame:
                     yield frame
@@ -249,8 +222,8 @@ class CameraStreamer:
 
     def get_status(self):
         return {
-            "camera_connected": self._camera.is_open(),
-            "grabbing_active": self._camera.is_grabbing(),
+            "source_type": self._video_controller.get_source_type(),
+            "source_available": self._video_controller.is_available(),
             "active_connections": self._connections.get_count(),
             "max_connections": MAX_CONNECTIONS,
             "fps": round(self._status.get_fps(), 2),
@@ -259,12 +232,29 @@ class CameraStreamer:
             "configured_fps": FRAME_RATE,
         }
 
+    def restart_with_new_source(self):
+        # Para a captura atual
+        self._video_controller.close()
+
+        # Cria novo controller
+        self._video_controller = VideoController()
+
+        # Reinicia thread de captura
+        if self._capture_thread and self._capture_thread.is_alive():
+            self._capture_thread.join(timeout=1.0)
+
+        self._start_capture_thread()
+
     def close(self):
-        self._camera.close()
+        self._video_controller.close()
 
 
 class StatusPageRenderer:
     def render(self, status):
+        source_status = self._get_source_status(
+            status["source_type"], status["source_available"]
+        )
+
         return f"""
         <!DOCTYPE html>
         <html>
@@ -273,51 +263,94 @@ class StatusPageRenderer:
             <meta charset="UTF-8">
             <meta http-equiv="refresh" content="5">
             <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                .status {{ background: #f0f0f0; padding: 15px; border-radius: 5px; margin: 10px 0; }}
-                .ok {{ color: #28a745; }}
-                .warning {{ color: #ffc107; }}
-                .error {{ color: #dc3545; }}
+                body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+                .container {{ max-width: 800px; margin: 0 auto; }}
+                .status {{ background: white; padding: 20px; border-radius: 8px; margin: 15px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                .upload-section {{ background: #e3f2fd; padding: 20px; border-radius: 8px; margin: 15px 0; }}
+                .ok {{ color: #28a745; font-weight: bold; }}
+                .warning {{ color: #ffc107; font-weight: bold; }}
+                .error {{ color: #dc3545; font-weight: bold; }}
+                .btn {{ background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-block; }}
+                .btn:hover {{ background: #0056b3; }}
+                .upload-form {{ margin-top: 15px; }}
+                .file-input {{ margin: 10px 0; }}
             </style>
         </head>
         <body>
-            <h1>Basler Camera Streamer</h1>
-            
-            <div class="status">
-                <h2>Status da Câmera</h2>
-                <p><strong>Conectada:</strong> <span class="{'ok' if status['camera_connected'] else 'error'}">{'Sim' if status['camera_connected'] else 'Não'}</span></p>
-                <p><strong>Captura Ativa:</strong> <span class="{'ok' if status['grabbing_active'] else 'error'}">{'Sim' if status['grabbing_active'] else 'Não'}</span></p>
-                <p><strong>FPS Configurado:</strong> {status['configured_fps']}</p>
-                <p><strong>FPS Atual:</strong> {status['fps']}</p>
-                <p><strong>Total de Frames:</strong> {status['total_frames']}</p>
+            <div class="container">
+                <h1>🎥 Video Streamer</h1>
+                
+                <div class="upload-section">
+                    <h2>📁 Upload de Vídeo</h2>
+                    <p>Faça upload de um arquivo de vídeo para streaming em loop</p>
+                    <form class="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+                        <div class="file-input">
+                            <input type="file" name="video" accept=".mp4,.avi,.mov,.mkv,.webm" required>
+                        </div>
+                        <button type="submit" class="btn">📤 Upload Vídeo</button>
+                    </form>
+                    <p><small>Formatos suportados: MP4, AVI, MOV, MKV, WebM</small></p>
+                </div>
+                
+                <div class="status">
+                    <h2>📊 Status da Fonte de Vídeo</h2>
+                    <p><strong>Tipo:</strong> <span class="{source_status['class']}">{source_status['text']}</span></p>
+                    <p><strong>Disponível:</strong> <span class="{'ok' if status['source_available'] else 'error'}">{'Sim' if status['source_available'] else 'Não'}</span></p>
+                    <p><strong>FPS Configurado:</strong> {status['configured_fps']}</p>
+                    <p><strong>FPS Atual:</strong> {status['fps']}</p>
+                    <p><strong>Total de Frames:</strong> {status['total_frames']}</p>
+                </div>
+                
+                <div class="status">
+                    <h2>🔗 Conexões</h2>
+                    <p><strong>Ativas:</strong> 
+                        <span class="{'ok' if status['active_connections'] < status['max_connections'] else 'warning'}">
+                            {status['active_connections']}/{status['max_connections']}
+                        </span>
+                    </p>
+                </div>
+                
+                <div class="status">
+                    <h2>⚙️ Sistema</h2>
+                    <p><strong>Uptime:</strong> {status['uptime']}</p>
+                    <p><strong>Endpoint:</strong> <a href="/video_feed">/video_feed</a></p>
+                    <p><strong>Preview:</strong> <a href="/preview">🖼️ Ver Preview</a></p>
+                </div>
+                
+                <p><small>Atualização automática a cada 5 segundos</small></p>
             </div>
-            
-            <div class="status">
-                <h2>Conexões</h2>
-                <p><strong>Ativas:</strong> 
-                    <span class="{'ok' if status['active_connections'] < status['max_connections'] else 'warning'}">
-                        {status['active_connections']}/{status['max_connections']}
-                    </span>
-                </p>
-            </div>
-            
-            <div class="status">
-                <h2>Sistema</h2>
-                <p><strong>Uptime:</strong> {status['uptime']}</p>
-                <p><strong>Endpoint:</strong> <a href="/video_feed">/video_feed</a></p>
-            </div>
-            
-            <p><small>Atualização automática a cada 5 segundos</small></p>
         </body>
         </html>
         """
 
+    def _get_source_status(self, source_type, is_available):
+        if source_type == "VideoFileSource":
+            return {
+                "text": "📹 Arquivo de Vídeo",
+                "class": "ok" if is_available else "error",
+            }
+        elif source_type == "BaslerCameraSource":
+            return {
+                "text": "📷 Câmera Basler",
+                "class": "ok" if is_available else "error",
+            }
+        else:
+            return {"text": "❌ Nenhuma fonte disponível", "class": "error"}
 
-streamer = CameraStreamer()
+
+def allowed_file(filename):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+# Garante que o diretório de upload existe
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+streamer = VideoStreamer()
 status_renderer = StatusPageRenderer()
 atexit.register(streamer.close)
 
 app = Flask(__name__)
+app.secret_key = "video_streamer_secret_key"
 
 
 @app.route("/video_feed")
@@ -329,6 +362,91 @@ def video_feed():
         streamer.generate_frames(),
         mimetype=f"multipart/x-mixed-replace; boundary={BOUNDARY}",
     )
+
+
+@app.route("/upload", methods=["POST"])
+def upload_video():
+    if "video" not in request.files:
+        flash("Nenhum arquivo selecionado")
+        return redirect(url_for("home"))
+
+    file = request.files["video"]
+    if file.filename == "":
+        flash("Nenhum arquivo selecionado")
+        return redirect(url_for("home"))
+
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        video_path = os.path.join(UPLOAD_FOLDER, "current_video.mp4")
+
+        # Remove o vídeo anterior se existir
+        if os.path.exists(video_path):
+            os.remove(video_path)
+
+        file.save(video_path)
+        flash("Vídeo enviado com sucesso! Reiniciando stream...")
+
+        # Reinicia o streamer com nova fonte
+        streamer.restart_with_new_source()
+
+        return redirect(url_for("home"))
+    else:
+        flash("Formato de arquivo não suportado")
+        return redirect(url_for("home"))
+
+
+@app.route("/preview")
+def preview():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Video Stream Preview</title>
+        <meta charset="UTF-8">
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                margin: 20px; 
+                background: #f5f5f5;
+                text-align: center;
+            }
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+                background: white;
+                padding: 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            img {
+                max-width: 100%;
+                border: 2px solid #ddd;
+                border-radius: 8px;
+            }
+            .btn {
+                background: #007bff;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                text-decoration: none;
+                display: inline-block;
+                margin: 10px;
+            }
+            .btn:hover { background: #0056b3; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎥 Video Stream Preview</h1>
+            <img src="/video_feed" alt="Video Stream">
+            <br>
+            <a href="/" class="btn">← Voltar ao Status</a>
+        </div>
+    </body>
+    </html>
+    """
 
 
 @app.route("/")
